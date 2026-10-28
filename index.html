@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Jogo de damas do Prof. Marins</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -13,7 +14,6 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
       min-height: 100vh;
       padding: 20px;
     }
@@ -24,21 +24,52 @@
       font-size: 2rem;
       text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
     }
-    .status-panel {
-      display: flex;
-      gap: 20px;
-      margin-bottom: 20px;
-      align-items: center;
+    .panel {
       background: #2a2a40;
-      padding: 12px 24px;
+      padding: 15px 20px;
       border-radius: 10px;
+      margin-bottom: 15px;
+      width: min(90vw, 480px);
+      text-align: center;
       box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
+    .online-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .input-group {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+    input[type="text"] {
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #1e1e2f;
+      color: #fff;
+      font-size: 1rem;
+      text-align: center;
+      width: 140px;
+      text-transform: uppercase;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-weight: bold;
+      margin-top: 5px;
+      background: #34495e;
+    }
+    .status-online { background: #27ae60; }
+    .status-waiting { background: #e67e22; }
     .turn-indicator {
       font-weight: bold;
-      font-size: 1rem;
       padding: 4px 10px;
       border-radius: 5px;
+      display: inline-block;
     }
     .turn-red { background: #e74c3c; color: #fff; }
     .turn-black { background: #34495e; color: #fff; border: 1px solid #7f8c8d; }
@@ -96,30 +127,51 @@
       font-size: 1.2rem;
     }
     .controls {
-      margin-top: 20px;
+      margin-top: 15px;
       display: flex;
-      gap: 12px;
+      gap: 10px;
     }
     button {
       background: #f39c12;
       color: #fff;
       border: none;
-      padding: 10px 20px;
-      font-size: 1rem;
+      padding: 8px 16px;
+      font-size: 0.95rem;
       font-weight: bold;
       border-radius: 6px;
       cursor: pointer;
       transition: background 0.2s, transform 0.1s;
     }
-    button:hover { background: #d35400; transform: translateY(-2px); }
+    button:hover { background: #d35400; }
+    button:disabled { background: #7f8c8d; cursor: not-allowed; }
   </style>
 </head>
 <body>
 
   <h1>Jogo de damas do Prof. Marins</h1>
 
-  <div class="status-panel">
+  <div class="panel">
+    <div><strong>Modo de Jogo:</strong></div>
+    <div style="margin: 8px 0;">
+      <label><input type="radio" name="mode" value="local" checked onclick="setMode('local')"> Mesmo Aparelho</label>
+      &nbsp;&nbsp;
+      <label><input type="radio" name="mode" value="online" onclick="setMode('online')"> Online (2 Aparelhos)</label>
+    </div>
+
+    <div id="online-panel" class="online-controls" style="display: none;">
+      <div id="connection-status" class="status-badge status-waiting">Desconectado</div>
+      <div class="input-group">
+        <button onclick="createRoom()">Criar Sala</button>
+        <input type="text" id="room-code-input" placeholder="Código" maxlength="6">
+        <button onclick="joinRoom()">Entrar</button>
+      </div>
+      <div id="room-info" style="font-size: 0.9rem; color: #f1c40f;"></div>
+    </div>
+  </div>
+
+  <div class="panel" style="display: flex; justify-content: space-around; align-items: center;">
     <div>Vez de: <span id="turn-text" class="turn-indicator turn-red">Vermelho</span></div>
+    <div>Sua Cor: <strong id="my-color">Vermelho / Preto (Local)</strong></div>
     <div>Placar: <span id="score-red">🔴 12</span> | <span id="score-black">⚫ 12</span></div>
   </div>
 
@@ -134,11 +186,103 @@
     const turnText = document.getElementById('turn-text');
     const scoreRed = document.getElementById('score-red');
     const scoreBlack = document.getElementById('score-black');
+    const connectionStatus = document.getElementById('connection-status');
+    const roomInfo = document.getElementById('room-info');
+    const myColorText = document.getElementById('my-color');
 
     let board = [];
     let turn = 'red';
     let selectedPiece = null;
     let possibleMoves = [];
+    
+    let gameMode = 'local'; // 'local' ou 'online'
+    let myColor = 'both';  // 'red', 'black', ou 'both'
+    let peer = null;
+    let conn = null;
+
+    function setMode(mode) {
+      gameMode = mode;
+      document.getElementById('online-panel').style.display = mode === 'online' ? 'flex' : 'none';
+      if (mode === 'local') {
+        myColor = 'both';
+        myColorText.textContent = 'Vermelho / Preto (Local)';
+        if (peer) peer.destroy();
+        resetGame();
+      } else {
+        myColorText.textContent = 'Aguardando Sala...';
+      }
+    }
+
+    function createRoom() {
+      const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
+      initPeer('marins-damas-' + roomCode, () => {
+        myColor = 'red';
+        myColorText.textContent = '🔴 Vermelho (Criador)';
+        roomInfo.textContent = `Passe este código para seu colega: ${roomCode}`;
+        connectionStatus.textContent = 'Aguardando colega entrar...';
+        connectionStatus.className = 'status-badge status-waiting';
+      });
+    }
+
+    function joinRoom() {
+      const code = document.getElementById('room-code-input').value.trim();
+      if (!code) return alert('Digite o código da sala!');
+
+      initPeer(null, () => {
+        myColor = 'black';
+        myColorText.textContent = '⚫ Preto (Convidado)';
+        conn = peer.connect('marins-damas-' + code);
+        setupConnection();
+      });
+    }
+
+    function initPeer(id, onOpen) {
+      if (peer) peer.destroy();
+      peer = id ? new Peer(id) : new Peer();
+
+      peer.on('open', () => {
+        if (onOpen) onOpen();
+      });
+
+      peer.on('connection', (c) => {
+        conn = c;
+        setupConnection();
+      });
+
+      peer.on('error', (err) => {
+        alert('Erro de conexão: ' + err.type);
+      });
+    }
+
+    function setupConnection() {
+      conn.on('open', () => {
+        connectionStatus.textContent = 'Conectado!';
+        connectionStatus.className = 'status-badge status-online';
+        if (myColor === 'red') {
+          roomInfo.textContent = 'O outro jogador entrou!';
+          sendState();
+        }
+      });
+
+      conn.on('data', (data) => {
+        if (data.type === 'STATE') {
+          board = data.board;
+          turn = data.turn;
+          render();
+        }
+      });
+
+      conn.on('close', () => {
+        connectionStatus.textContent = 'Colega desconectou';
+        connectionStatus.className = 'status-badge status-waiting';
+      });
+    }
+
+    function sendState() {
+      if (conn && conn.open) {
+        conn.send({ type: 'STATE', board: board, turn: turn });
+      }
+    }
 
     function initBoard() {
       board = Array(8).fill(null).map(() => Array(8).fill(null));
@@ -164,8 +308,6 @@
         for (let c = 0; c < 8; c++) {
           const square = document.createElement('div');
           square.className = `square ${(r + c) % 2 === 0 ? 'light' : 'dark'}`;
-          square.dataset.row = r;
-          square.dataset.col = c;
 
           const piece = board[r][c];
           if (piece) {
@@ -203,6 +345,8 @@
     }
 
     function handleSquareClick(r, c) {
+      if (gameMode === 'online' && myColor !== turn) return;
+
       const piece = board[r][c];
       if (piece && piece.color === turn) {
         selectedPiece = { row: r, col: c };
@@ -261,11 +405,17 @@
       turn = turn === 'red' ? 'black' : 'red';
       selectedPiece = null;
       possibleMoves = [];
+
+      if (gameMode === 'online') {
+        sendState();
+      }
+
       render();
     }
 
     function resetGame() {
       initBoard();
+      if (gameMode === 'online') sendState();
     }
 
     initBoard();
